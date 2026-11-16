@@ -1,0 +1,59 @@
+name: Validate
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: helpdesk
+          POSTGRES_PASSWORD: ephemeral-test-password
+          POSTGRES_DB: helpdesk_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U helpdesk -d helpdesk_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      TEST_DATABASE_URL: postgres://helpdesk:ephemeral-test-password@127.0.0.1:5432/helpdesk_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go mod verify
+      - run: go vet ./...
+      - run: go test -race -count=1 -cover ./...
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+      - run: docker build --tag tg-business-helpdesk:ci .
+      - name: Start Compose and verify runtime health
+        run: |
+          cat > /tmp/helpdesk-ci.env <<'ENV'
+          POSTGRES_PASSWORD=ephemeral_test_password
+          BOT_TOKEN=123:test
+          WEBHOOK_SECRET=wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww
+          ADMIN_TOKEN=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          SUPPORT_GROUP_ID=-10099
+          BUSINESS_OWNER_IDS=1
+          AGENT_IDS=2
+          WEBHOOK_URL=https://example.invalid/webhook
+          ENV
+          docker compose --env-file /tmp/helpdesk-ci.env config --quiet
+          docker compose --env-file /tmp/helpdesk-ci.env up -d --build --wait --wait-timeout 90
+          docker compose --env-file /tmp/helpdesk-ci.env exec -T app helpdesk -action healthcheck
+          curl --fail --silent --show-error -H 'Authorization: Bearer aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' http://127.0.0.1:8080/admin/status
+      - name: Compose logs and cleanup
+        if: always()
+        run: |
+          if test -f /tmp/helpdesk-ci.env; then
+            docker compose --env-file /tmp/helpdesk-ci.env logs --tail 100
+            docker compose --env-file /tmp/helpdesk-ci.env down --volumes
+          fi

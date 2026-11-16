@@ -1,0 +1,50 @@
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: helpdesk
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: helpdesk
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U helpdesk -d helpdesk"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+  app:
+    build: .
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 35s
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "host=db user=helpdesk password=${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD} dbname=helpdesk port=5432 sslmode=disable TimeZone=UTC"
+      BOT_TOKEN: ${BOT_TOKEN:?Set BOT_TOKEN}
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:?Set WEBHOOK_SECRET}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:?Set ADMIN_TOKEN}
+      SUPPORT_GROUP_ID: ${SUPPORT_GROUP_ID:?Set SUPPORT_GROUP_ID}
+      BUSINESS_OWNER_IDS: ${BUSINESS_OWNER_IDS:?Set BUSINESS_OWNER_IDS}
+      AGENT_IDS: ${AGENT_IDS:?Set AGENT_IDS}
+      WEBHOOK_URL: ${WEBHOOK_URL:?Set WEBHOOK_URL}
+      LISTEN_ADDR: ":8080"
+    ports:
+      - "127.0.0.1:8080:8080"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+volumes:
+  pgdata:

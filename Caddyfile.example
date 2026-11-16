@@ -1,0 +1,9 @@
+support.example.com {
+    @webhook path /webhook
+    handle @webhook {
+        reverse_proxy 127.0.0.1:8080
+    }
+    handle {
+        respond "Not Found" 404
+    }
+}

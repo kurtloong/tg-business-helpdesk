@@ -1,0 +1,9 @@
+.git
+.env
+bin
+*.zip
+coverage.out
+__pycache__/
+/work/
+/outputs/
+.DS_Store

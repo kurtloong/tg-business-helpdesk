@@ -1,0 +1,8 @@
+.env
+/bin/
+/coverage.out
+*.log
+__pycache__/
+/work/
+/outputs/
+.DS_Store
