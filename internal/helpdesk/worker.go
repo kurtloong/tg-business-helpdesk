@@ -27,21 +27,38 @@ func permanent(s string) error          { return &permanentError{s} }
 func validCustomer(m *Message) bool {
 	return m != nil && !m.IsService && m.BusinessID == "" && m.Chat.Type == "private" && m.Chat.ID > 0 && m.From != nil && !m.From.IsBot && m.From.ID == m.Chat.ID && m.SenderChat == nil && m.SenderBusinessBot == nil && m.Date > 0 && m.ID > 0
 }
+
+// The support forum must never be reinterpreted as a customer group.
+func (w *Worker) customerMessage(m *Message) bool {
+	if validCustomer(m) {
+		return true
+	}
+	return m != nil && !m.IsService && m.BusinessID == "" && m.SenderBusinessBot == nil &&
+		m.Chat.ID < 0 && m.Chat.ID != w.Config.GroupID &&
+		(m.Chat.Type == "group" || m.Chat.Type == "supergroup") && m.ThreadID >= 0 &&
+		m.ID > 0 && m.Date > 0 && m.From != nil && m.From.ID > 0 && !m.From.IsBot && m.SenderChat == nil
+}
+func customerThread(m *Message) int64 {
+	if m.Chat.ID < 0 && m.IsTopicMessage {
+		return m.ThreadID
+	}
+	return 0
+}
 func (w *Worker) handle(ctx context.Context, db *gorm.DB, j *Job) (int64, error) {
 	var u Update
 	if err := json.Unmarshal([]byte(j.Payload), &u); err != nil {
 		return 0, permanent("invalid stored update")
 	}
-	if m := u.Message; validCustomer(m) {
+	if m := u.Message; w.customerMessage(m) {
 		var err error
 		var route Route
-		err = db.Where("customer_id = ?", m.Chat.ID).First(&route).Error
+		err = db.Where("customer_id = ? AND customer_thread_id = ?", m.Chat.ID, customerThread(m)).First(&route).Error
 		incoming := time.Unix(m.Date, 0).UTC()
 		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 			return 0, err
 		}
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			route = Route{CustomerID: m.Chat.ID, GroupID: w.Config.GroupID, LastIncoming: incoming}
+			route = Route{CustomerID: m.Chat.ID, CustomerThreadID: customerThread(m), GroupID: w.Config.GroupID, LastIncoming: incoming}
 			if err = db.Create(&route).Error; err != nil {
 				return 0, err
 			}
@@ -59,6 +76,12 @@ func (w *Worker) handle(ctx context.Context, db *gorm.DB, j *Job) (int64, error)
 			}
 			// Stable numeric titles avoid impersonation through customer-controlled names.
 			name := fmt.Sprintf("客户%d", m.Chat.ID)
+			if m.Chat.ID < 0 {
+				name = fmt.Sprintf("客户群%d", m.Chat.ID)
+				if route.CustomerThreadID > 0 {
+					name += fmt.Sprintf(" 话题%d", route.CustomerThreadID)
+				}
+			}
 			if err = w.API.Call(ctx, "createForumTopic", map[string]any{"chat_id": route.GroupID, "name": name}, &topic); err != nil {
 				return 0, err
 			}
@@ -89,7 +112,7 @@ func (w *Worker) handle(ctx context.Context, db *gorm.DB, j *Job) (int64, error)
 	if _, _, err := payload(m); err != nil {
 		return 0, permanent("unsupported staff message type")
 	}
-	return w.API.Send(ctx, m, route.CustomerID, 0)
+	return w.API.Send(ctx, m, route.CustomerID, route.CustomerThreadID)
 }
 func retryDelay(attempt int, err error) time.Duration {
 	d := time.Second * time.Duration(1<<min(attempt, 8))
@@ -156,7 +179,7 @@ func (w *Worker) Step(ctx context.Context, db *gorm.DB) (bool, error) {
 	direction := "event"
 	var update Update
 	if json.Unmarshal([]byte(j.Payload), &update) == nil {
-		if validCustomer(update.Message) {
+		if w.customerMessage(update.Message) {
 			direction = "customer_to_staff"
 		} else if update.Message != nil {
 			direction = "staff_to_customer"

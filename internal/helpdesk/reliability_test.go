@@ -310,7 +310,7 @@ func TestBusinessDatabaseUpgradePreservesAndIsolatesHistory(t *testing.T) {
 	if err := db.Exec("DROP TABLE bot_routes").Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Exec("DELETE FROM schema_migrations WHERE version=3").Error; err != nil {
+	if err := db.Exec("DELETE FROM schema_migrations WHERE version>=3").Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Exec("INSERT INTO routes(business_id,customer_id,group_id,thread_id,last_incoming) VALUES ('old',10,-10099,55,now())").Error; err != nil {

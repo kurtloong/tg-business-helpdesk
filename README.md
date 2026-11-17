@@ -2,17 +2,17 @@
 
 **首次使用请先看 [从这里开始](docs/START_HERE.md)。** 本项目具备试运行所需的持久队列与运维入口；生产上线仍需完成真实 Telegram 验收、监控接入和备份恢复演练。
 
-客户直接私聊 Bot → 私有超级群中的客户专属 Topic → 白名单客服 B 回复 → Bot 发回客户。
+客户私聊 Bot 或在客户群发消息 → 私有客服超级群中的独立 Topic → 白名单客服 B 回复 → Bot 发回原私聊、原客户群或原群话题。
 
 使用普通 BotFather 机器人即可，不需要 A 账号、Business/Secretary Mode、Premium 或 Business 授权。客户看到的是机器人身份。Go + Gin + Gorm + PostgreSQL 实现，保留文本、图片、视频、语音、文件双向同步、持久化去重重试、Webhook 安全和运维入口。
 
-每个客户按其数字 chat ID 分配独立 Topic。白名单客服可处理该群所有 Topic；群成员共享全部客户内容，不提供员工间的数据隔离。一个数据库只供同一个机器人使用。
+私聊按数字 chat ID 分配 Topic；客户群按「群 chat ID＋原话题 ID」分配 Topic，普通群每群一个。白名单客服可处理该群所有 Topic；群成员共享全部客户内容，不提供员工间的数据隔离。一个数据库只供同一个机器人使用。
 
 ## 官方 API 依据（2026-11-17）
 
 - [普通机器人](https://core.telegram.org/bots#how-are-bots-different-from-users)：客户必须先打开机器人的 `https://t.me/<bot_username>` 链接并点「开始」或发消息，机器人不能主动建立陌生人会话。客户若屏蔽机器人，回复可能收到 403 并进入死信。
 - [createForumTopic](https://core.telegram.org/bots/api#createforumtopic)：群启用 Topics，机器人是管理员并拥有 `can_manage_topics`。
-- [sendMessage](https://core.telegram.org/bots/api#sendmessage) 及相应媒体方法：客户方向只使用 `chat_id`，群方向额外使用 `message_thread_id`；不再传 `business_connection_id`，不再检查 Business 的 24 小时回复窗口。
+- [sendMessage](https://core.telegram.org/bots/api#sendmessage) 及相应媒体方法：私聊方向使用 `chat_id`，向话题发送时额外使用 `message_thread_id`；不再传 `business_connection_id`，不再检查 Business 的 24 小时回复窗口。
 - [setWebhook](https://core.telegram.org/bots/api#setwebhook)：公网 HTTPS 与 secret header 校验，只订阅 `message`。历史 Business 更新即使再次送达也会忽略。
 
 ## 1. 准备机器人和群
@@ -22,6 +22,16 @@
 3. 添加机器人为群管理员，授予管理话题及正常发送文字/媒体的能力。
 4. 获取 B 等客服的数字用户 ID 和群的负数 chat ID；分别填写 `AGENT_IDS` 和 `SUPPORT_GROUP_ID`。它们不是 username、手机号或邀请链接。
 5. 部署并注册 webhook 后，把机器人链接发给客户。客户先点「开始」，然后直接发送问题；`/start` 本身也会进入客户 Topic。
+
+### 接入客户群
+
+把同一个 Bot 加入客户群，设为管理员并允许发送文本和媒体，即可接收普通用户的群消息并自动创建客服 Topic。无需客户群白名单，也不用把客户群 ID 填入配置；`SUPPORT_GROUP_ID` 始终只填内部客服群 ID。Bot 能读到的所有客户群普通消息都会同步，请只把它加入需要接入客服的群。
+
+[官方群消息权限](https://core.telegram.org/bots/faq#what-messages-will-my-bot-get)：群管理员 Bot 可以接收普通用户消息。若不设为管理员，则需通过 BotFather 的 `/setprivacy` 关闭隐私模式，并将 Bot 移出后重新加入群；同时确保它有发送文本/媒体权限。权限开启前的历史不会补拉。
+
+普通群/超级群每群一个客服 Topic，标题为「客户群<负数ID>」。客户群启用话题时，每个原话题单独映射，客服回复发回原话题；多个群成员共用对应 Topic。文本及媒体保持原内容，不附加群成员姓名或原始回复引用。匿名管理员、频道身份及其他机器人消息不处理，群内用户使用个人身份发言。
+
+群升级为超级群会改变 chat ID；升级后的新消息创建新映射和客服 Topic，旧 Topic 不会自动迁移。机器人被移出客户群或失去发送权限后，回复进入死信。客服工作群被明确排除，避免循环转发。
 
 ## 2. Docker Compose 部署
 
@@ -68,7 +78,7 @@ go run ./cmd/server -action check
 go run ./cmd/server -action serve
 ```
 
-`migrations/001_init.sql`、`002_observability.sql`、`003_direct_bot.sql` 和迁移版本嵌入二进制；启动时升级到 v3。历史 Business `routes` 表保留，新会话使用独立的 `bot_routes` 表。`schema_migrations` 记录已执行版本；事务与 PostgreSQL advisory lock 防止并发迁移。没有破坏性自动回滚。未来加迁移时增加 SQL 文件与版本执行逻辑，不能修改已上线版本冒充新迁移。
+`migrations/001_init.sql`、`002_observability.sql`、`003_direct_bot.sql`、`004_customer_groups.sql` 和迁移版本嵌入二进制；启动时升级到 v4。v4 为原会话增加默认值为 0 的 `customer_thread_id`，保留已有私聊 Topic 和任务。历史 Business `routes` 表保留，新会话使用独立的 `bot_routes` 表。`schema_migrations` 记录已执行版本；事务与 PostgreSQL advisory lock 防止并发迁移。没有破坏性自动回滚。未来加迁移时增加 SQL 文件与版本执行逻辑，不能修改已上线版本冒充新迁移。
 
 ## 4. 功能与处理语义
 
@@ -76,7 +86,7 @@ go run ./cmd/server -action serve
 - 客户看到机器人发送的消息；B 在群内操作。媒体以新消息发送，不带转发来源。Telegram 大群成功排程但返回 `message_id=0` 时视作已提交，不因暂缺最终 ID 重发。不会保持 Telegram 原始回复引用。
 - 客户首次直接联系机器人时创建 Topic，标题为「客户数字ID」，之后复用 `bot_routes` 映射。客户不需要加入客服群。
 - 仅群内白名单客服可以代机器人回复。普通私聊不使用 Business 权限或 24 小时窗口；API 若因客户屏蔽、机器人被踢出群等原因拒绝发送，任务进入死信。
-- 忽略其他群、群内非白名单、机器人、匿名管理员/频道身份、旧 Business 消息和机器人回声。B 必须用个人身份发言。
+- 客户群自动接入；客服工作群仅处理白名单客服在已关联 Topic 内的回复。忽略机器人、匿名管理员/频道身份、旧 Business 消息和机器人回声。B 必须用个人身份发言。
 - **客户 Topic 的所有白名单客服支持类型消息都会发送给客户**，不要在其中写内部备注。不支持的客服消息进入死信；不支持的客户类型在 Topic 发一条提示，请客户改发文本或受支持的文件。
 - 相册的每个项目分别同步，不重组成相册。编辑、删除、贴纸、视频圆消息、音频音乐、富消息、历史回填和服务消息同步不在此版范围；已发送消息的后续编辑/删除不会同步。未知更新安全忽略。
 - 只处理普通 `message`；不会拉取历史消息或把旧 A 联系人自动导入。
@@ -91,7 +101,7 @@ PostgreSQL 持久队列使用单个活动 worker；专用数据库会话持有 a
 
 **不承诺外部发送 exactly-once**：Telegram 没有业务发送幂等键。如果发送/创建 Topic 成功，但返回丢失或进程在保存结果前崩溃，后续重试可能重复发消息或留下孤立 Topic。正常 webhook 重投与已落库消息能去重，这个跨系统崩溃窗口不能仅靠 PostgreSQL 消除。重要人工重放前先在机器人私聊/群中检查是否已送达。
 
-任务按可执行的 update ID 选取；延迟重试不阻塞后来任务，**错误恢复时不保证严格消息顺序**。单 worker 空队列每 250ms 查询一次；实际群出站发送（包括失败告警）最小间隔 3.2 秒，所有客户私聊出站共用独立的 1 秒间隔。无关事件与普通队列状态处理不再等待 3.2 秒。群方向理论上限约 18 次/分钟，私聊方向约 60 次/分钟，单 worker 的网络开销与重试会进一步降低；按库级串行、非高吞吐架构。大量客户或持续大文件/相册可能积压；可监控 pending 最老创建时间。不要随意加并发绕开锁，否则会破坏路由创建的并发假设。
+任务按可执行的 update ID 选取；延迟重试不阻塞后来任务，**错误恢复时不保证严格消息顺序**。单 worker 空队列每 250ms 查询一次；所有群出站发送（包括客服群转发、客户群回复和失败告警，共用限速）最小间隔 3.2 秒，所有客户私聊出站共用独立的 1 秒间隔。无关事件与普通队列状态处理不再等待 3.2 秒。群方向理论上限约 18 次/分钟，私聊方向约 60 次/分钟，单 worker 的网络开销与重试会进一步降低；按库级串行、非高吞吐架构。大量客户或持续大文件/相册可能积压；可监控 pending 最老创建时间。不要随意加并发绕开锁，否则会破坏路由创建的并发假设。
 
 关闭/删除 Topic 会导致发送失败，应由群管理员恢复原 Topic；不要未经核对直接改数据库映射。变更客服群需要明确迁移已有路由，否则系统拒绝继续转发入站消息，防止意外串群。
 
@@ -160,3 +170,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/helpdesk-linux-amd64 ./cmd
 GitHub Actions 自动执行真实 PostgreSQL 集成测试、竞态检测、依赖漏洞扫描、Docker 构建和 Compose 健康启动测试；使用临时假凭据，不会向真实 Telegram 发送消息。
 
 具体已执行的验证与未验证项目见 `VERIFICATION.md`。本交付不包含真实账号凭据，不会自动连接你的 Telegram 或向真实客户发消息。
+
+### 从私聊版本升级到群聊版本
+
+备份数据库，停止所有旧 app 实例，再运行 `docker compose up -d --build --wait`。v4 自动保留已有私聊映射和队列；Webhook 仍只订阅 `message`，无需重新注册。把 Bot 加入客户群并设为管理员，再发新消息测试。无需新增环境变量。

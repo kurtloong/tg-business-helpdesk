@@ -22,6 +22,7 @@ type Message struct {
 	IsService         bool            `json:"-"`
 	ID                int64           `json:"message_id"`
 	ThreadID          int64           `json:"message_thread_id"`
+	IsTopicMessage    bool            `json:"is_topic_message"`
 	Date              int64           `json:"date"`
 	BusinessID        string          `json:"business_connection_id"`
 	From              *User           `json:"from"`
@@ -50,7 +51,7 @@ func (m *Message) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*m = Message(value)
-	for _, key := range []string{"forum_topic_created", "forum_topic_closed", "forum_topic_reopened", "forum_topic_edited", "general_forum_topic_hidden", "general_forum_topic_unhidden", "message_auto_delete_timer_changed", "chat_background_set", "pinned_message", "new_chat_members", "left_chat_member"} {
+	for _, key := range []string{"forum_topic_created", "forum_topic_closed", "forum_topic_reopened", "forum_topic_edited", "general_forum_topic_hidden", "general_forum_topic_unhidden", "message_auto_delete_timer_changed", "chat_background_set", "pinned_message", "new_chat_members", "left_chat_member", "migrate_to_chat_id", "migrate_from_chat_id", "group_chat_created", "supergroup_chat_created", "channel_chat_created"} {
 		if raw, ok := fields[key]; ok && string(raw) != "null" {
 			m.IsService = true
 			break
@@ -76,13 +77,14 @@ type Job struct {
 	UpdatedAt       time.Time `json:"updated_at"`
 }
 type Route struct {
-	ID           int64 `gorm:"primaryKey"`
-	CustomerID   int64
-	GroupID      int64
-	ThreadID     int64
-	LastIncoming time.Time
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	ID               int64 `gorm:"primaryKey"`
+	CustomerID       int64
+	CustomerThreadID int64
+	GroupID          int64
+	ThreadID         int64
+	LastIncoming     time.Time
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 // Keep historical Business routes isolated; they are not proof of a bot conversation.

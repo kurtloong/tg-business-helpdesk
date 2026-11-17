@@ -38,7 +38,7 @@ func Migrate(db *gorm.DB) error {
 		for _, migration := range []struct {
 			version int
 			sql     string
-		}{{1, migrations.Initial}, {2, migrations.Observability}, {3, migrations.BotRoutes}} {
+		}{{1, migrations.Initial}, {2, migrations.Observability}, {3, migrations.BotRoutes}, {4, migrations.CustomerGroups}} {
 			var count int64
 			if err := tx.Table("schema_migrations").Where("version = ?", migration.version).Count(&count).Error; err != nil {
 				return err
