@@ -42,7 +42,6 @@ jobs:
           WEBHOOK_SECRET=wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww
           ADMIN_TOKEN=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
           SUPPORT_GROUP_ID=-10099
-          BUSINESS_OWNER_IDS=1
           AGENT_IDS=2
           WEBHOOK_URL=https://example.invalid/webhook
           ENV

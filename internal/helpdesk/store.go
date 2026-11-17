@@ -35,36 +35,34 @@ func Migrate(db *gorm.DB) error {
 		if err := tx.Exec("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())").Error; err != nil {
 			return err
 		}
-		var n int64
-		if err := tx.Table("schema_migrations").Where("version = 1").Count(&n).Error; err != nil {
-			return err
-		}
-		if n == 0 {
-			if err := tx.Exec(migrations.Initial).Error; err != nil {
+		for _, migration := range []struct {
+			version int
+			sql     string
+		}{{1, migrations.Initial}, {2, migrations.Observability}, {3, migrations.BotRoutes}} {
+			var count int64
+			if err := tx.Table("schema_migrations").Where("version = ?", migration.version).Count(&count).Error; err != nil {
 				return err
 			}
-			if err := tx.Exec("INSERT INTO schema_migrations(version) VALUES (1)").Error; err != nil {
+			if count > 0 {
+				continue
+			}
+			if err := tx.Exec(migration.sql).Error; err != nil {
+				return err
+			}
+			if err := tx.Exec("INSERT INTO schema_migrations(version) VALUES (?)", migration.version).Error; err != nil {
 				return err
 			}
 		}
-		if err := tx.Table("schema_migrations").Where("version = 2").Count(&n).Error; err != nil {
-			return err
-		}
-		if n > 0 {
-			return nil
-		}
-		if err := tx.Exec(migrations.Observability).Error; err != nil {
-			return err
-		}
-		return tx.Exec("INSERT INTO schema_migrations(version) VALUES (2)").Error
+		return nil
 	})
 }
 func sourceKey(u Update) string {
-	if m := u.BusinessMessage; m != nil {
-		return fmt.Sprintf("b:%s:%d:%d", m.BusinessID, m.Chat.ID, m.ID)
-	}
 	if m := u.Message; m != nil {
-		return fmt.Sprintf("g:%d:%d", m.Chat.ID, m.ID)
+		prefix := "g"
+		if m.Chat.Type == "private" {
+			prefix = "p"
+		}
+		return fmt.Sprintf("%s:%d:%d", prefix, m.Chat.ID, m.ID)
 	}
 	return fmt.Sprintf("u:%d", u.ID)
 }
@@ -77,10 +75,10 @@ func Enqueue(ctx context.Context, db *gorm.DB, u Update, raw []byte) error {
 		if result.Error != nil {
 			return result.Error
 		}
-		// The customer's reply window starts at receipt, even if forwarding is waiting for a retry.
-		if result.RowsAffected > 0 && u.BusinessMessage != nil && validCustomer(u.BusinessMessage) {
-			m := u.BusinessMessage
-			return tx.Model(&Route{}).Where("business_id = ? AND customer_id = ?", m.BusinessID, m.Chat.ID).
+		// Retain the latest contact timestamp, including while topic forwarding is waiting for a retry.
+		if result.RowsAffected > 0 && validCustomer(u.Message) {
+			m := u.Message
+			return tx.Model(&Route{}).Where("customer_id = ?", m.Chat.ID).
 				Update("last_incoming", gorm.Expr("GREATEST(last_incoming, ?)", time.Unix(m.Date, 0).UTC())).Error
 		}
 		return nil

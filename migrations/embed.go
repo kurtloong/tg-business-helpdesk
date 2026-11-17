@@ -7,3 +7,6 @@ var Initial string
 
 //go:embed 002_observability.sql
 var Observability string
+
+//go:embed 003_direct_bot.sql
+var BotRoutes string

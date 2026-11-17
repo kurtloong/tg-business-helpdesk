@@ -112,7 +112,7 @@ func payload(m *Message) (string, map[string]any, error) {
 	}
 	return method, p, nil
 }
-func (t *Telegram) Send(ctx context.Context, m *Message, chatID, threadID int64, businessID string) (int64, error) {
+func (t *Telegram) Send(ctx context.Context, m *Message, chatID, threadID int64) (int64, error) {
 	method, p, err := payload(m)
 	if err != nil {
 		return 0, err
@@ -120,9 +120,6 @@ func (t *Telegram) Send(ctx context.Context, m *Message, chatID, threadID int64,
 	p["chat_id"] = chatID
 	if threadID > 0 {
 		p["message_thread_id"] = threadID
-	}
-	if businessID != "" {
-		p["business_connection_id"] = businessID
 	}
 	// A single active worker shares this limiter, including dead-letter alerts.
 	t.sendMu.Lock()
@@ -151,4 +148,38 @@ func (t *Telegram) Send(ctx context.Context, m *Message, chatID, threadID int64,
 	// Telegram may return ID 0 for a successfully scheduled message in a large chat.
 	// API success must not be retried solely because the final message ID is not yet available.
 	return sent.ID, nil
+}
+
+// Check validates an ordinary bot and its private support forum; no Business capability is required.
+func (t *Telegram) Check(ctx context.Context, groupID int64) (int64, error) {
+	var me User
+	if err := t.Call(ctx, "getMe", map[string]any{}, &me); err != nil {
+		return 0, err
+	}
+	if me.ID <= 0 || !me.IsBot {
+		return 0, errors.New("getMe did not return a bot account")
+	}
+	var chat struct {
+		Type            string   `json:"type"`
+		Forum           bool     `json:"is_forum"`
+		Username        string   `json:"username"`
+		ActiveUsernames []string `json:"active_usernames"`
+	}
+	if err := t.Call(ctx, "getChat", map[string]any{"chat_id": groupID}, &chat); err != nil {
+		return 0, err
+	}
+	if chat.Type != "supergroup" || !chat.Forum || chat.Username != "" || len(chat.ActiveUsernames) > 0 {
+		return 0, errors.New("support group must be a private forum supergroup")
+	}
+	var member struct {
+		Status string `json:"status"`
+		Manage bool   `json:"can_manage_topics"`
+	}
+	if err := t.Call(ctx, "getChatMember", map[string]any{"chat_id": groupID, "user_id": me.ID}, &member); err != nil {
+		return 0, err
+	}
+	if member.Status != "administrator" || !member.Manage {
+		return 0, errors.New("bot requires administrator and can_manage_topics")
+	}
+	return me.ID, nil
 }

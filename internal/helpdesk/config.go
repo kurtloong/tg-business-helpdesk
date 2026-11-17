@@ -13,7 +13,7 @@ import (
 type Config struct {
 	Token, DSN, WebhookSecret, AdminToken, APIBase, Listen, WebhookURL string
 	GroupID                                                            int64
-	Owners, Agents                                                     map[int64]bool
+	Agents                                                             map[int64]bool
 	MaxAttempts                                                        int
 	PollInterval                                                       time.Duration
 }
@@ -40,9 +40,6 @@ func LoadConfig() (Config, error) {
 	var err error
 	if c.GroupID, err = strconv.ParseInt(os.Getenv("SUPPORT_GROUP_ID"), 10, 64); err != nil || c.GroupID >= 0 {
 		return c, fmt.Errorf("SUPPORT_GROUP_ID must be negative")
-	}
-	if c.Owners, err = ids(os.Getenv("BUSINESS_OWNER_IDS")); err != nil {
-		return c, fmt.Errorf("BUSINESS_OWNER_IDS: %w", err)
 	}
 	if c.Agents, err = ids(os.Getenv("AGENT_IDS")); err != nil {
 		return c, fmt.Errorf("AGENT_IDS: %w", err)

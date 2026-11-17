@@ -47,39 +47,11 @@ func run(action string) error {
 		return helpdesk.RegisterWebhook(c, api, ctx)
 	}
 	if action == "check" {
-		var me struct {
-			ID         int64 `json:"id"`
-			CanConnect bool  `json:"can_connect_to_business"`
-		}
-		if err = api.Call(ctx, "getMe", map[string]any{}, &me); err != nil {
+		botID, err := api.Check(ctx, c.GroupID)
+		if err != nil {
 			return err
 		}
-		if !me.CanConnect {
-			return errors.New("enable Secretary Mode (Business Mode in older clients) in BotFather")
-		}
-		var chat struct {
-			Type            string   `json:"type"`
-			Forum           bool     `json:"is_forum"`
-			Username        string   `json:"username"`
-			ActiveUsernames []string `json:"active_usernames"`
-		}
-		if err = api.Call(ctx, "getChat", map[string]any{"chat_id": c.GroupID}, &chat); err != nil {
-			return err
-		}
-		if chat.Type != "supergroup" || !chat.Forum || chat.Username != "" || len(chat.ActiveUsernames) > 0 {
-			return errors.New("support group must be a private forum supergroup")
-		}
-		var member struct {
-			Status string `json:"status"`
-			Manage bool   `json:"can_manage_topics"`
-		}
-		if err = api.Call(ctx, "getChatMember", map[string]any{"chat_id": c.GroupID, "user_id": me.ID}, &member); err != nil {
-			return err
-		}
-		if member.Status != "administrator" || !member.Manage {
-			return errors.New("bot requires administrator and can_manage_topics")
-		}
-		slog.Info("Telegram prerequisites passed", "bot_id", me.ID)
+		slog.Info("Telegram prerequisites passed", "bot_id", botID)
 		return nil
 	}
 	if action != "serve" && action != "migrate" {

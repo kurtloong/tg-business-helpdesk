@@ -94,7 +94,7 @@ func TestSecurityAndConfig(t *testing.T) {
 	t.Setenv("WEBHOOK_SECRET", strings.Repeat("x", 32))
 	t.Setenv("ADMIN_TOKEN", strings.Repeat("y", 32))
 	t.Setenv("SUPPORT_GROUP_ID", "-10099")
-	t.Setenv("BUSINESS_OWNER_IDS", "1,2")
+	t.Setenv("BUSINESS_OWNER_IDS", "")
 	t.Setenv("AGENT_IDS", "3,4")
 	if _, err := LoadConfig(); err != nil {
 		t.Fatal(err)
@@ -105,7 +105,7 @@ func TestSecurityAndConfig(t *testing.T) {
 	}
 }
 func TestCustomerFilter(t *testing.T) {
-	m := Message{ID: 1, Date: time.Now().Unix(), BusinessID: "b", Chat: Chat{10, "private"}, From: &User{ID: 10}}
+	m := Message{ID: 1, Date: time.Now().Unix(), Chat: Chat{10, "private"}, From: &User{ID: 10}}
 	if !validCustomer(&m) {
 		t.Fatal("valid customer rejected")
 	}
@@ -120,7 +120,11 @@ func TestCustomerFilter(t *testing.T) {
 	}
 }
 func TestTelegramRouting(t *testing.T) {
-	for _, business := range []string{"", "connection"} {
+	for _, thread := range []int64{0, 7} {
+		chat := int64(9)
+		if thread > 0 {
+			chat = -10099
+		}
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path != "/bot123:test/sendVoice" {
 				t.Error(r.URL.Path)
@@ -129,26 +133,20 @@ func TestTelegramRouting(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
 				t.Error(err)
 			}
-			if p["voice"] != "file" || p["chat_id"] != float64(9) {
+			if p["voice"] != "file" || p["chat_id"] != float64(chat) || p["business_connection_id"] != nil {
 				t.Error(p)
 			}
-			if business == "" {
-				if p["message_thread_id"] != float64(7) || p["business_connection_id"] != nil {
+			if thread > 0 {
+				if p["message_thread_id"] != float64(thread) {
 					t.Error(p)
 				}
-			} else {
-				if p["business_connection_id"] != business || p["message_thread_id"] != nil {
-					t.Error(p)
-				}
+			} else if p["message_thread_id"] != nil {
+				t.Error(p)
 			}
 			fmt.Fprint(w, `{"ok":true,"result":{"message_id":42}}`)
 		}))
 		api := &Telegram{Token: "123:test", Base: srv.URL, Client: srv.Client()}
-		thread := int64(7)
-		if business != "" {
-			thread = 0
-		}
-		id, err := api.Send(context.Background(), &Message{Voice: &Media{"file"}}, 9, thread, business)
+		id, err := api.Send(context.Background(), &Message{Voice: &Media{"file"}}, chat, thread)
 		srv.Close()
 		if err != nil || id != 42 {
 			t.Fatalf("%d %v", id, err)
@@ -183,7 +181,7 @@ func integrationDB(t *testing.T) *gorm.DB {
 	if err = Migrate(db); err != nil {
 		t.Fatalf("migration not idempotent: %v", err)
 	}
-	if err = db.Exec("TRUNCATE jobs,routes RESTART IDENTITY").Error; err != nil {
+	if err = db.Exec("TRUNCATE jobs,routes,bot_routes RESTART IDENTITY").Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Exec("UPDATE worker_states SET heartbeat_at = NULL").Error; err != nil {
@@ -197,9 +195,6 @@ func TestPostgresIntegration(t *testing.T) {
 	var mu sync.Mutex
 	counts := map[string]int{}
 	deny := false
-	enabled := true
-	reply := true
-	owner := int64(1)
 	flood := false
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
@@ -210,20 +205,18 @@ func TestPostgresIntegration(t *testing.T) {
 		_ = json.NewDecoder(r.Body).Decode(&p)
 		w.Header().Set("Content-Type", "application/json")
 		switch method {
-		case "getBusinessConnection":
-			fmt.Fprintf(w, `{"ok":true,"result":{"id":"conn","user":{"id":%d},"is_enabled":%t,"rights":{"can_reply":%t}}}`, owner, enabled, reply)
 		case "createForumTopic":
 			fmt.Fprint(w, `{"ok":true,"result":{"message_thread_id":88}}`)
 		default:
-			if p["business_connection_id"] != nil && flood {
+			if p["chat_id"] == float64(10) && flood {
 				fmt.Fprint(w, `{"ok":false,"error_code":429,"description":"rate limited","parameters":{"retry_after":20}}`)
 				return
 			}
-			if p["business_connection_id"] != nil && deny {
+			if p["chat_id"] == float64(10) && deny {
 				fmt.Fprint(w, `{"ok":false,"error_code":403,"description":"blocked"}`)
 				return
 			}
-			if p["business_connection_id"] != nil && (p["chat_id"] != float64(10) || p["business_connection_id"] != "conn" || p["message_thread_id"] != nil) {
+			if p["business_connection_id"] != nil || (p["chat_id"] == float64(10) && p["message_thread_id"] != nil) {
 				t.Error("invalid customer route", p)
 			}
 			if p["message_thread_id"] != nil && (p["chat_id"] != float64(-10099) || p["message_thread_id"] != float64(88)) {
@@ -233,10 +226,10 @@ func TestPostgresIntegration(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	cfg := Config{GroupID: -10099, Owners: map[int64]bool{1: true}, Agents: map[int64]bool{2: true}, MaxAttempts: 3, WebhookSecret: "secret", AdminToken: "admin"}
+	cfg := Config{GroupID: -10099, Agents: map[int64]bool{2: true}, MaxAttempts: 3, WebhookSecret: "secret", AdminToken: "admin"}
 	worker := &Worker{DB: db, API: &Telegram{Token: "123:test", Base: srv.URL, Client: srv.Client()}, Config: cfg}
 	customer := func(id int64) Update {
-		return Update{ID: id, BusinessMessage: &Message{ID: id, Date: time.Now().Unix(), BusinessID: "conn", Chat: Chat{10, "private"}, From: &User{ID: 10}, Text: "你好"}}
+		return Update{ID: id, Message: &Message{ID: id, Date: time.Now().Unix(), Chat: Chat{10, "private"}, From: &User{ID: 10}, Text: "你好"}}
 	}
 	staff := func(id, agent int64) Update {
 		return Update{ID: id, Message: &Message{ID: id, ThreadID: 88, Chat: Chat{-10099, "supergroup"}, From: &User{ID: agent}, Text: "答复"}}
@@ -311,35 +304,12 @@ func TestPostgresIntegration(t *testing.T) {
 	enqueue(anonymous)
 	step()
 	status(5, "ignored")
-	// Window and revoked permissions create dead letters, with no customer send.
-	db.Model(&Route{}).Where("customer_id = 10").Update("last_incoming", time.Now().Add(-25*time.Hour))
+	// A direct bot conversation is not limited by Business's 24-hour window.
+	db.Model(&Route{}).Where("customer_id = 10").Update("last_incoming", time.Now().Add(-72*time.Hour))
 	enqueue(staff(6, 2))
 	step()
-	status(6, "dead")
-	enqueue(customer(7))
-	step()
+	status(6, "done")
 	mu.Lock()
-	reply = false
-	mu.Unlock()
-	enqueue(staff(8, 2))
-	step()
-	status(8, "dead")
-	mu.Lock()
-	reply = true
-	enabled = false
-	mu.Unlock()
-	enqueue(staff(9, 2))
-	step()
-	status(9, "dead")
-	mu.Lock()
-	enabled = true
-	owner = 999
-	mu.Unlock()
-	enqueue(staff(10, 2))
-	step()
-	status(10, "dead")
-	mu.Lock()
-	owner = 1
 	flood = true
 	mu.Unlock()
 	enqueue(staff(11, 2))
@@ -527,7 +497,7 @@ func TestScheduledMessageIsNotRetried(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, `{"ok":true,"result":{"message_id":0}}`) }))
 	defer srv.Close()
 	api := &Telegram{Token: "123:test", Base: srv.URL, Client: srv.Client()}
-	id, err := api.Send(context.Background(), &Message{Video: &Media{"video"}}, -10099, 88, "")
+	id, err := api.Send(context.Background(), &Message{Video: &Media{"video"}}, -10099, 88)
 	if err != nil || id != 0 {
 		t.Fatalf("scheduled send treated as failure: %d %v", id, err)
 	}

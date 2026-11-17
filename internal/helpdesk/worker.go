@@ -24,55 +24,24 @@ type permanentError struct{ reason string }
 
 func (e *permanentError) Error() string { return e.reason }
 func permanent(s string) error          { return &permanentError{s} }
-func (w *Worker) connection(ctx context.Context, id string, reply bool) (*BusinessConnection, error) {
-	var c BusinessConnection
-	if err := w.API.Call(ctx, "getBusinessConnection", map[string]any{"business_connection_id": id}, &c); err != nil {
-		return nil, err
-	}
-	if c.ID != id {
-		return nil, permanent("business connection identity mismatch")
-	}
-	if !w.Config.Owners[c.User.ID] {
-		if !reply {
-			return nil, errIgnored
-		}
-		return nil, permanent("business owner is not allowed")
-	}
-	if !c.IsEnabled {
-		return nil, permanent("business connection is disabled")
-	}
-	if reply && !c.Rights.CanReply {
-		return nil, permanent("business rights.can_reply is missing")
-	}
-	return &c, nil
-}
 func validCustomer(m *Message) bool {
-	return !m.IsService && m.BusinessID != "" && m.Chat.Type == "private" && m.From != nil && !m.From.IsBot && m.From.ID == m.Chat.ID && m.SenderBusinessBot == nil && m.Date > 0 && m.ID > 0
+	return m != nil && !m.IsService && m.BusinessID == "" && m.Chat.Type == "private" && m.Chat.ID > 0 && m.From != nil && !m.From.IsBot && m.From.ID == m.Chat.ID && m.SenderChat == nil && m.SenderBusinessBot == nil && m.Date > 0 && m.ID > 0
 }
 func (w *Worker) handle(ctx context.Context, db *gorm.DB, j *Job) (int64, error) {
 	var u Update
 	if err := json.Unmarshal([]byte(j.Payload), &u); err != nil {
 		return 0, permanent("invalid stored update")
 	}
-	if m := u.BusinessMessage; m != nil {
-		if !validCustomer(m) {
-			return 0, errIgnored
-		}
-		c, err := w.connection(ctx, m.BusinessID, false)
-		if err != nil {
-			return 0, err
-		}
-		if m.From.ID == c.User.ID {
-			return 0, errIgnored
-		}
+	if m := u.Message; validCustomer(m) {
+		var err error
 		var route Route
-		err = db.Where("business_id = ? AND customer_id = ?", m.BusinessID, m.Chat.ID).First(&route).Error
+		err = db.Where("customer_id = ?", m.Chat.ID).First(&route).Error
 		incoming := time.Unix(m.Date, 0).UTC()
 		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 			return 0, err
 		}
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			route = Route{BusinessID: m.BusinessID, CustomerID: m.Chat.ID, GroupID: w.Config.GroupID, LastIncoming: incoming}
+			route = Route{CustomerID: m.Chat.ID, GroupID: w.Config.GroupID, LastIncoming: incoming}
 			if err = db.Create(&route).Error; err != nil {
 				return 0, err
 			}
@@ -88,8 +57,8 @@ func (w *Worker) handle(ctx context.Context, db *gorm.DB, j *Job) (int64, error)
 			var topic struct {
 				ThreadID int64 `json:"message_thread_id"`
 			}
-			// Numeric IDs avoid customer-controlled topic titles and distinguish multiple owners.
-			name := fmt.Sprintf("A%d · 客户%d", c.User.ID, m.Chat.ID)
+			// Stable numeric titles avoid impersonation through customer-controlled names.
+			name := fmt.Sprintf("客户%d", m.Chat.ID)
 			if err = w.API.Call(ctx, "createForumTopic", map[string]any{"chat_id": route.GroupID, "name": name}, &topic); err != nil {
 				return 0, err
 			}
@@ -102,12 +71,12 @@ func (w *Worker) handle(ctx context.Context, db *gorm.DB, j *Job) (int64, error)
 		}
 		if _, _, err = payload(m); errors.Is(err, ErrUnsupported) {
 			// Preserve visibility of unsupported input without silently dropping a customer contact.
-			m = &Message{Text: fmt.Sprintf("[不支持的客户消息类型] chat=%d message=%d；请在 A 客户端查看。", m.Chat.ID, m.ID)}
+			m = &Message{Text: fmt.Sprintf("[不支持的客户消息类型] chat=%d message=%d；请客户改发文本或文件。", m.Chat.ID, m.ID)}
 		}
-		return w.API.Send(ctx, m, route.GroupID, route.ThreadID, "")
+		return w.API.Send(ctx, m, route.GroupID, route.ThreadID)
 	}
 	m := u.Message
-	if m == nil || m.ID <= 0 || m.IsService || m.Chat.ID != w.Config.GroupID || m.Chat.Type != "supergroup" || m.ThreadID <= 0 || m.From == nil || m.From.IsBot || m.SenderChat != nil || !w.Config.Agents[m.From.ID] {
+	if m == nil || m.BusinessID != "" || m.SenderBusinessBot != nil || m.ID <= 0 || m.IsService || m.Chat.ID != w.Config.GroupID || m.Chat.Type != "supergroup" || m.ThreadID <= 0 || m.From == nil || m.From.IsBot || m.SenderChat != nil || !w.Config.Agents[m.From.ID] {
 		return 0, errIgnored
 	}
 	var route Route
@@ -120,13 +89,7 @@ func (w *Worker) handle(ctx context.Context, db *gorm.DB, j *Job) (int64, error)
 	if _, _, err := payload(m); err != nil {
 		return 0, permanent("unsupported staff message type")
 	}
-	if time.Since(route.LastIncoming) >= 24*time.Hour {
-		return 0, permanent("customer reply window expired (24 hours)")
-	}
-	if _, err := w.connection(ctx, route.BusinessID, true); err != nil {
-		return 0, err
-	}
-	return w.API.Send(ctx, m, route.CustomerID, 0, route.BusinessID)
+	return w.API.Send(ctx, m, route.CustomerID, 0)
 }
 func retryDelay(attempt int, err error) time.Duration {
 	d := time.Second * time.Duration(1<<min(attempt, 8))
@@ -193,7 +156,7 @@ func (w *Worker) Step(ctx context.Context, db *gorm.DB) (bool, error) {
 	direction := "event"
 	var update Update
 	if json.Unmarshal([]byte(j.Payload), &update) == nil {
-		if update.BusinessMessage != nil {
+		if validCustomer(update.Message) {
 			direction = "customer_to_staff"
 		} else if update.Message != nil {
 			direction = "staff_to_customer"
@@ -211,7 +174,7 @@ func (w *Worker) Step(ctx context.Context, db *gorm.DB) (bool, error) {
 	if status == "dead" {
 		slog.Error("delivery failed", "update_id", j.UpdateID, "reason", reason)
 		// Best-effort operator alert; the durable dead-letter record is authoritative.
-		_, alertErr := w.API.Send(ctx, &Message{Text: fmt.Sprintf("任务 %d（%s）发送失败：%s。请管理员检查死信队列。", j.UpdateID, j.SourceKey, reason)}, w.Config.GroupID, 0, "")
+		_, alertErr := w.API.Send(ctx, &Message{Text: fmt.Sprintf("任务 %d（%s）发送失败：%s。请管理员检查死信队列。", j.UpdateID, j.SourceKey, reason)}, w.Config.GroupID, 0)
 		if alertErr != nil {
 			slog.Warn("operator alert failed", "update_id", j.UpdateID)
 		}

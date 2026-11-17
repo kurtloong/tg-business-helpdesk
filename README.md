@@ -1,36 +1,34 @@
-# Telegram Business 多客户客服系统
+# Telegram Bot 多客户客服系统
 
 **首次使用请先看 [从这里开始](docs/START_HERE.md)。** 本项目具备试运行所需的持久队列与运维入口；生产上线仍需完成真实 Telegram 验收、监控接入和备份恢复演练。
 
-客户私聊 A → Business Bot → 私有超级群中的客户专属 Topic → 白名单客服 B 回复 → Bot 以 A 身份发回客户。A、B 都是用户账号，此外还需要一个 BotFather 创建的机器人；不需要登录 A/B 的 MTProto session。
+客户直接私聊 Bot → 私有超级群中的客户专属 Topic → 白名单客服 B 回复 → Bot 发回客户。
 
-实现 Go + Gin + Gorm + PostgreSQL；包含 Docker 部署、版本化 SQL 迁移、持久化任务队列、安全 Webhook、死信查询/重放与测试。支持多个白名单 A；路由键为 `(business_connection_id, customer_chat_id)`，因此不同 A 的客户不会串话。每位白名单客服可处理该群所有 Topic；不是分租户隔离平台，群成员能看到群内全部客户内容。
+使用普通 BotFather 机器人即可，不需要 A 账号、Business/Secretary Mode、Premium 或 Business 授权。客户看到的是机器人身份。Go + Gin + Gorm + PostgreSQL 实现，保留文本、图片、视频、语音、文件双向同步、持久化去重重试、Webhook 安全和运维入口。
 
-## 官方 API 核实（2026-11-03）
+每个客户按其数字 chat ID 分配独立 Topic。白名单客服可处理该群所有 Topic；群成员共享全部客户内容，不提供员工间的数据隔离。一个数据库只供同一个机器人使用。
 
-- [Business Bots](https://core.telegram.org/bots/features#business-bots)：BotFather 启用 **Secretary Mode**（旧客户端可能显示 Business Mode）；A 显式连接机器人并选择可访问的会话。
-- [BusinessBotRights](https://core.telegram.org/bots/api#businessbotrights)：回复能力检查 `rights.can_reply`，限最近 **24 小时收到过来信**的私聊，不能以此接口任意冷启动客户。
-- [BusinessConnection](https://core.telegram.org/bots/api#businessconnection)：连接须 `is_enabled=true`。系统每次发送前调用 `getBusinessConnection` 检查最新授权，不依赖过时的顶层 `can_reply` 字段。
-- [API 更新记录](https://core.telegram.org/bots/api#recent-changes)：2026-05-08 的 Bot API 10.0 已允许 Secretary Bots 管理没有 Premium 的用户账号；不要把旧教程中的“必须 Premium”当作当前统一要求。实际连接入口以 A 的客户端为准。
-- [createForumTopic](https://core.telegram.org/bots/api#createforumtopic)：私有超级群开启 Topics，机器人必须是管理员并有 `can_manage_topics`。B 直接在客户 Topic 发言，不需要引用特定一条消息。
-- [sendMessage](https://core.telegram.org/bots/api#sendmessage)、[sendPhoto](https://core.telegram.org/bots/api#sendphoto)、[sendVideo](https://core.telegram.org/bots/api#sendvideo)、[sendVoice](https://core.telegram.org/bots/api#sendvoice)、[sendDocument](https://core.telegram.org/bots/api#senddocument)：客户方向携带 `business_connection_id`；群方向携带 `message_thread_id`。同一个机器人复用收到的 `file_id`，不下载或重新上传媒体。
-- [setWebhook](https://core.telegram.org/bots/api#setwebhook)：HTTPS，校验 `X-Telegram-Bot-Api-Secret-Token`，显式订阅更新类型。Telegram 未交付更新最多保留 24 小时。
+## 官方 API 依据（2026-11-17）
 
-## 1. 准备账号和群
+- [普通机器人](https://core.telegram.org/bots#how-are-bots-different-from-users)：客户必须先打开机器人的 `https://t.me/<bot_username>` 链接并点「开始」或发消息，机器人不能主动建立陌生人会话。客户若屏蔽机器人，回复可能收到 403 并进入死信。
+- [createForumTopic](https://core.telegram.org/bots/api#createforumtopic)：群启用 Topics，机器人是管理员并拥有 `can_manage_topics`。
+- [sendMessage](https://core.telegram.org/bots/api#sendmessage) 及相应媒体方法：客户方向只使用 `chat_id`，群方向额外使用 `message_thread_id`；不再传 `business_connection_id`，不再检查 Business 的 24 小时回复窗口。
+- [setWebhook](https://core.telegram.org/bots/api#setwebhook)：公网 HTTPS 与 secret header 校验，只订阅 `message`。历史 Business 更新即使再次送达也会忽略。
 
-1. BotFather 创建机器人，启用 Secretary/Business Mode，保存 token。不要启用其他 webhook 服务或同时运行 getUpdates。
-2. 创建**私有超级群**，开启 Topics；只邀请可信客服。不要给群设置公开用户名。
-3. 添加机器人为群管理员，授予管理话题与正常发言/发媒体的能力。管理员机器人可接收群消息，通常无需额外关闭 Privacy Mode。
-4. 取得 A、B 的数字用户 ID 和群的负数 chat ID。可先在隔离环境用自己的调试机器人取得，或在未设置 webhook 前通过 `getUpdates` 查看自己的群消息。勿把真实 token 粘贴进第三方网站。群 ID 不是群邀请链接或 Topic ID。
-5. 在 A 的 Telegram 连接设置中连接此机器人，允许处理目标客户会话、授予回复权限。检查排除列表，不要排除客服所需的客户。
-6. A 的 ID 放入 `BUSINESS_OWNER_IDS`，B 及其他客服放入 `AGENT_IDS`。白名单仅接受数字 ID，不接受 username。配置修改后重建 app 容器。
+## 1. 准备机器人和群
+
+1. BotFather 创建普通机器人并保存 token；不需要启用 Secretary/Business Mode，也不要让其他 webhook 服务或 getUpdates 同时接管它。
+2. 新建群 → 群设置 → 群组类型选「私有」→ 开启「Topics / 话题」。只邀请可信客服。
+3. 添加机器人为群管理员，授予管理话题及正常发送文字/媒体的能力。
+4. 获取 B 等客服的数字用户 ID 和群的负数 chat ID；分别填写 `AGENT_IDS` 和 `SUPPORT_GROUP_ID`。它们不是 username、手机号或邀请链接。
+5. 部署并注册 webhook 后，把机器人链接发给客户。客户先点「开始」，然后直接发送问题；`/start` 本身也会进入客户 Topic。
 
 ## 2. Docker Compose 部署
 
 需要 Docker Engine + Compose v2、域名和 HTTPS 反向代理。80/443 指向部署服务器。
 
 ```sh
-cp .env.example .env
+test -e .env || cp .env.example .env
 openssl rand -hex 32
 # 分别运行三次，为数据库密码、WEBHOOK_SECRET、ADMIN_TOKEN 填入不同随机值。
 # 编辑 .env，把所有占位值替换成真实配置。
@@ -41,7 +39,7 @@ docker compose exec app helpdesk -action set-webhook
 curl --fail http://127.0.0.1:8080/readyz
 ```
 
-`check` 实际调用 Telegram 验证机器人连接能力、群类型、私有性、Topics 和管理权限；不会替代 A 端的会话授权验证。`set-webhook` 须在 HTTPS 已可访问时执行；保留 Telegram 待处理更新，`max_connections=1` 减少乱序。普通启动不自动覆盖 webhook。
+`check` 调用 Telegram 验证普通机器人身份、群私有性、Topics 和管理权限，不要求机器人具备 Business 能力。`set-webhook` 须在 HTTPS 已可访问时执行；保留 Telegram 待处理更新，`max_connections=1` 减少乱序。普通启动不自动覆盖 webhook。
 
 应用启动先执行迁移，数据库健康后运行。PostgreSQL 不暴露宿主端口；app 仅绑定 `127.0.0.1:8080`。`Caddyfile.example` 用于**宿主机安装的 Caddy**，替换域名后加载，可自动签发 HTTPS。只向公网代理 `/webhook`，不向公网开放 `/admin`。
 
@@ -70,18 +68,18 @@ go run ./cmd/server -action check
 go run ./cmd/server -action serve
 ```
 
-`migrations/001_init.sql`、`002_observability.sql` 和迁移版本嵌入二进制；已有 v1 数据库会自动升级到 v2，保留原消息和路由。`schema_migrations` 记录已执行版本；事务与 PostgreSQL advisory lock 防止并发迁移。没有破坏性自动回滚。未来加迁移时增加 SQL 文件与版本执行逻辑，不能修改已上线版本冒充新迁移。
+`migrations/001_init.sql`、`002_observability.sql`、`003_direct_bot.sql` 和迁移版本嵌入二进制；启动时升级到 v3。历史 Business `routes` 表保留，新会话使用独立的 `bot_routes` 表。`schema_migrations` 记录已执行版本；事务与 PostgreSQL advisory lock 防止并发迁移。没有破坏性自动回滚。未来加迁移时增加 SQL 文件与版本执行逻辑，不能修改已上线版本冒充新迁移。
 
 ## 4. 功能与处理语义
 
 - 文本及实体格式、图片、视频、语音、文件双向同步；媒体字幕及实体保留，图片选最大尺寸。
-- 客户只看到 A 发送的消息；B 在群内操作。媒体以新消息发送，不带转发来源。Telegram 大群成功排程但返回 `message_id=0` 时视作已提交，不因暂缺最终 ID 重发。不会保持 Telegram 原始回复引用。
-- 客户首次来信创建 Topic，标题包含 A/客户数字 ID，随后复用数据库映射。A 重新连接后若 connection ID 变化，会形成新路由和新 Topic。
-- 每次出站都重新检查 A 的白名单、连接启用状态与 `rights.can_reply`，客户入库时即刷新已有路由的最后来信时间（与入队同一事务，乱序消息不倒退），发送前校验 24 小时。Telegram 服务器最终决定是否允许发送；存在权限变更与发送之间的竞态，由其拒绝响应兜底。
-- 忽略其他群、群内非白名单、机器人、匿名管理员/频道身份消息、A 自己发出的消息及 `sender_business_bot` 回声。B 必须用个人身份发言。
-- **客户 Topic 的所有白名单客服支持类型消息都会发送给客户**，不要在其中写内部备注。不支持的客服消息进入死信；不支持的客户类型在 Topic 发一条提示，供客服去 A 查看。
+- 客户看到机器人发送的消息；B 在群内操作。媒体以新消息发送，不带转发来源。Telegram 大群成功排程但返回 `message_id=0` 时视作已提交，不因暂缺最终 ID 重发。不会保持 Telegram 原始回复引用。
+- 客户首次直接联系机器人时创建 Topic，标题为「客户数字ID」，之后复用 `bot_routes` 映射。客户不需要加入客服群。
+- 仅群内白名单客服可以代机器人回复。普通私聊不使用 Business 权限或 24 小时窗口；API 若因客户屏蔽、机器人被踢出群等原因拒绝发送，任务进入死信。
+- 忽略其他群、群内非白名单、机器人、匿名管理员/频道身份、旧 Business 消息和机器人回声。B 必须用个人身份发言。
+- **客户 Topic 的所有白名单客服支持类型消息都会发送给客户**，不要在其中写内部备注。不支持的客服消息进入死信；不支持的客户类型在 Topic 发一条提示，请客户改发文本或受支持的文件。
 - 相册的每个项目分别同步，不重组成相册。编辑、删除、贴纸、视频圆消息、音频音乐、富消息、历史回填和服务消息同步不在此版范围；已发送消息的后续编辑/删除不会同步。未知更新安全忽略。
-- 新收到的 `business_connection` 更新保存为任务后忽略；权限通过发送时实时查询获取，避免依赖事件到达顺序。不会启动后自动拉取历史消息。
+- 只处理普通 `message`；不会拉取历史消息或把旧 A 联系人自动导入。
 
 ## 5. 去重、重试和可用性边界
 
@@ -91,11 +89,17 @@ PostgreSQL 持久队列使用单个活动 worker；专用数据库会话持有 a
 
 网络错误、HTTP/API 429、5xx 指数退避，尊重 `retry_after`；最多 8 次。400/401/403 等永久错误直接进入 `dead`；失败在群 General Topic 尝试提示任务 ID，持久死信记录为准。告警发送自身不重试，需监控死信队列。已成功任务不允许人工重放。
 
-**不承诺外部发送 exactly-once**：Telegram 没有业务发送幂等键。如果发送/创建 Topic 成功，但返回丢失或进程在保存结果前崩溃，后续重试可能重复发消息或留下孤立 Topic。正常 webhook 重投与已落库消息能去重，这个跨系统崩溃窗口不能仅靠 PostgreSQL 消除。重要人工重放前先在 A/群中检查是否已送达。
+**不承诺外部发送 exactly-once**：Telegram 没有业务发送幂等键。如果发送/创建 Topic 成功，但返回丢失或进程在保存结果前崩溃，后续重试可能重复发消息或留下孤立 Topic。正常 webhook 重投与已落库消息能去重，这个跨系统崩溃窗口不能仅靠 PostgreSQL 消除。重要人工重放前先在机器人私聊/群中检查是否已送达。
 
 任务按可执行的 update ID 选取；延迟重试不阻塞后来任务，**错误恢复时不保证严格消息顺序**。单 worker 空队列每 250ms 查询一次；实际群出站发送（包括失败告警）最小间隔 3.2 秒，所有客户私聊出站共用独立的 1 秒间隔。无关事件与普通队列状态处理不再等待 3.2 秒。群方向理论上限约 18 次/分钟，私聊方向约 60 次/分钟，单 worker 的网络开销与重试会进一步降低；按库级串行、非高吞吐架构。大量客户或持续大文件/相册可能积压；可监控 pending 最老创建时间。不要随意加并发绕开锁，否则会破坏路由创建的并发假设。
 
-24 小时窗口依据此系统实际处理到的客户新来信计算，已有会话在部署前的最后来信无法自动回填。过期任务不会主动联系客户；等客户再次联系 A 后，管理员判断是否重试。关闭/删除 Topic 会导致永久失败，应由群管理员恢复原 Topic；不要未经核对直接改数据库映射。变更客服群需要明确迁移已有路由，否则系统拒绝继续发送，防止意外串群。
+关闭/删除 Topic 会导致发送失败，应由群管理员恢复原 Topic；不要未经核对直接改数据库映射。变更客服群需要明确迁移已有路由，否则系统拒绝继续转发入站消息，防止意外串群。
+
+### 从旧 Business 版本升级
+
+先备份数据库，**停止所有旧 app 实例后**再启动新版本，避免旧 worker 继续处理旧会话。v3 不删除旧 `routes` 或历史正文/发送记录；为防止模式切换时误投，迁移当时所有 `pending` 任务会转为 `dead` 并标注 `Business mode retired`，须人工审阅，不能批量盲目重放。
+
+旧 Topic 不复用为普通 bot 会话，也不能继续在其中回复旧客户。客户须先直接联系机器人，新消息会创建新 Topic。删除 `.env` 中的 `BUSINESS_OWNER_IDS`（旧值即使保留也不再使用），更新代码后重新执行 `set-webhook`，将订阅改成仅 `message`。迁移完成后不要直接回退运行旧程序，应按备份恢复计划处理。
 
 ## 6. 运维和权限
 
@@ -115,7 +119,7 @@ python3 scripts/admin.py list --status pending
 python3 scripts/admin.py retry 123456789
 ```
 
-对应接口：`GET /admin/jobs?status=dead`（最近 100 条，返回任务元数据，不含消息正文），`POST /admin/jobs/:update_id/retry`（只可重放 dead）。重试会重新检查权限/时限，不能绕过 Telegram 限制。管理员 token 拥有重放所有客户任务的能力，不交给普通客服。脚本使用本地端口；远程访问先建立 `ssh -L 8080:127.0.0.1:8080 user@server`。
+对应接口：`GET /admin/jobs?status=dead`（最近 100 条，返回任务元数据，不含消息正文），`POST /admin/jobs/:update_id/retry`（只可重放 dead）。重试会重新检查当前客服白名单和 Topic 路由，不能绕过 Telegram 的屏蔽或权限限制。管理员 token 拥有重放所有客户任务的能力，不交给普通客服。脚本使用本地端口；远程访问先建立 `ssh -L 8080:127.0.0.1:8080 user@server`。
 
 库中 payload 存有客户文字、ID 和 file_id；保护数据库、备份、群访问权限。默认没有自动清理；保留策略需同时考虑个人信息和去重要求。可对终态任务将 payload 置为 `{}` 以减少正文保留，但保留 update_id/source_key/status，并且这些任务不能再重试。清理前备份并审核。
 
@@ -137,19 +141,19 @@ docker compose up -d app
 go test -race ./...
 go vet ./...
 go build -trimpath -o bin/helpdesk ./cmd/server
-# 仅用于全新的一次性测试库：集成测试会 TRUNCATE jobs/routes，数据库名必须以 _test 结尾！
+# 仅用于全新的一次性测试库：集成测试会 TRUNCATE jobs/routes/bot_routes，数据库名必须以 _test 结尾！
 TEST_DATABASE_URL='postgres://user:password@127.0.0.1:5432/helpdesk_test?sslmode=disable' go test -race -count=1 ./...
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/helpdesk-linux-amd64 ./cmd/server
 ```
 
-单元测试覆盖媒体选择、转发参数、Webhook 安全/体积/JSON、白名单配置、回声过滤、错误分类和退避。真实 PostgreSQL 集成测试配合本地 HTTP 模拟 Telegram，覆盖双向路由、Topic 复用、并发去重、非白名单/匿名客服拦截、窗口过期、权限撤销、禁用连接、未知 A 拦截、429 持久化重试、worker 重建后续跑、死信重放与排他锁。
+单元测试覆盖媒体选择、转发参数、Webhook 安全/体积/JSON、白名单配置、回声过滤、错误分类和退避。真实 PostgreSQL 集成测试配合本地 HTTP 模拟 Telegram，覆盖双向路由、Topic 复用、并发去重、非白名单/匿名客服拦截、普通私聊超过 24 小时仍可回复、旧 Business 更新及旧 Topic 隔离、v2→v3 升级保留历史、429 持久化重试、worker 重建后续跑、死信重放与排他锁。
 
 真实 Telegram 验收清单：
 
-1. 客户向 A 发送文本及四种媒体，确认专属 Topic 内容和字幕。
-2. B 在 Topic 逐项回复，确认客户看到 A 发出；第二个客户验证不同 Topic 和回复对象。
+1. 客户向机器人发送文本及四种媒体，确认专属 Topic 内容和字幕。
+2. B 在 Topic 逐项回复，确认客户看到机器人发出；第二个客户验证不同 Topic 和回复对象。
 3. 非白名单/匿名身份发言不传给客户；机器人回声不会循环。
-4. 撤销 A 的回复授权，确认死信可查询；恢复权限后人工重试。
+4. 客户屏蔽机器人或临时撤销群权限，确认失败进入死信；恢复后核对是否已送达再重试。
 5. 重启 app，确认映射保留；重复投递同一 webhook，确认不重复处理。
 6. 检查无公开 admin 路由，测试备份恢复，观察日志和队列。
 

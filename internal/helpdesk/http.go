@@ -119,5 +119,5 @@ func RegisterWebhook(c Config, api *Telegram, ctx context.Context) error {
 	if !strings.HasPrefix(c.WebhookURL, "https://") {
 		return errors.New("WEBHOOK_URL must start with https://")
 	}
-	return api.Call(ctx, "setWebhook", map[string]any{"url": c.WebhookURL, "secret_token": c.WebhookSecret, "max_connections": 1, "allowed_updates": []string{"message", "business_connection", "business_message"}, "drop_pending_updates": false}, nil)
+	return api.Call(ctx, "setWebhook", map[string]any{"url": c.WebhookURL, "secret_token": c.WebhookSecret, "max_connections": 1, "allowed_updates": []string{"message"}, "drop_pending_updates": false}, nil)
 }

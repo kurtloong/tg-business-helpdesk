@@ -59,19 +59,9 @@ func (m *Message) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-type BusinessConnection struct {
-	ID        string `json:"id"`
-	User      User   `json:"user"`
-	IsEnabled bool   `json:"is_enabled"`
-	Rights    struct {
-		CanReply bool `json:"can_reply"`
-	} `json:"rights"`
-}
 type Update struct {
-	ID              int64               `json:"update_id"`
-	Message         *Message            `json:"message"`
-	BusinessMessage *Message            `json:"business_message"`
-	Connection      *BusinessConnection `json:"business_connection"`
+	ID      int64    `json:"update_id"`
+	Message *Message `json:"message"`
 }
 type Job struct {
 	UpdateID        int64     `gorm:"primaryKey;autoIncrement:false" json:"update_id"`
@@ -87,7 +77,6 @@ type Job struct {
 }
 type Route struct {
 	ID           int64 `gorm:"primaryKey"`
-	BusinessID   string
 	CustomerID   int64
 	GroupID      int64
 	ThreadID     int64
@@ -95,3 +84,6 @@ type Route struct {
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
 }
+
+// Keep historical Business routes isolated; they are not proof of a bot conversation.
+func (Route) TableName() string { return "bot_routes" }
