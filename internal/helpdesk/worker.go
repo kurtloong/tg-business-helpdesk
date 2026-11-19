@@ -92,11 +92,14 @@ func (w *Worker) handle(ctx context.Context, db *gorm.DB, j *Job) (int64, error)
 				return 0, err
 			}
 		}
+		identity := staffIdentity(m)
 		if _, _, err = payload(m); errors.Is(err, ErrUnsupported) {
 			// Preserve visibility of unsupported input without silently dropping a customer contact.
 			m = &Message{Text: fmt.Sprintf("[不支持的客户消息类型] chat=%d message=%d；请客户改发文本或文件。", m.Chat.ID, m.ID)}
 		}
-		return w.API.Send(ctx, m, route.GroupID, route.ThreadID)
+		copy := *m
+		copy.StaffIdentity = identity
+		return w.API.Send(ctx, &copy, route.GroupID, route.ThreadID)
 	}
 	m := u.Message
 	if m == nil || m.BusinessID != "" || m.SenderBusinessBot != nil || m.ID <= 0 || m.IsService || m.Chat.ID != w.Config.GroupID || m.Chat.Type != "supergroup" || m.ThreadID <= 0 || m.From == nil || m.From.IsBot || m.SenderChat != nil || !w.Config.Agents[m.From.ID] {

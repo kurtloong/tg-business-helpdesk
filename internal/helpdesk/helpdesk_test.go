@@ -105,7 +105,7 @@ func TestSecurityAndConfig(t *testing.T) {
 	}
 }
 func TestCustomerFilter(t *testing.T) {
-	m := Message{ID: 1, Date: time.Now().Unix(), Chat: Chat{10, "private"}, From: &User{ID: 10}}
+	m := Message{ID: 1, Date: time.Now().Unix(), Chat: Chat{ID: 10, Type: "private"}, From: &User{ID: 10}}
 	if !validCustomer(&m) {
 		t.Fatal("valid customer rejected")
 	}
@@ -229,10 +229,10 @@ func TestPostgresIntegration(t *testing.T) {
 	cfg := Config{GroupID: -10099, Agents: map[int64]bool{2: true}, MaxAttempts: 3, WebhookSecret: "secret", AdminToken: "admin"}
 	worker := &Worker{DB: db, API: &Telegram{Token: "123:test", Base: srv.URL, Client: srv.Client()}, Config: cfg}
 	customer := func(id int64) Update {
-		return Update{ID: id, Message: &Message{ID: id, Date: time.Now().Unix(), Chat: Chat{10, "private"}, From: &User{ID: 10}, Text: "你好"}}
+		return Update{ID: id, Message: &Message{ID: id, Date: time.Now().Unix(), Chat: Chat{ID: 10, Type: "private"}, From: &User{ID: 10}, Text: "你好"}}
 	}
 	staff := func(id, agent int64) Update {
-		return Update{ID: id, Message: &Message{ID: id, ThreadID: 88, Chat: Chat{-10099, "supergroup"}, From: &User{ID: agent}, Text: "答复"}}
+		return Update{ID: id, Message: &Message{ID: id, ThreadID: 88, Chat: Chat{ID: -10099, Type: "supergroup"}, From: &User{ID: agent}, Text: "答复"}}
 	}
 	enqueue := func(u Update) {
 		t.Helper()
@@ -300,7 +300,7 @@ func TestPostgresIntegration(t *testing.T) {
 		t.Fatal("unauthorized sender delivered")
 	}
 	anonymous := staff(5, 2)
-	anonymous.Message.SenderChat = &Chat{-10099, "supergroup"}
+	anonymous.Message.SenderChat = &Chat{ID: -10099, Type: "supergroup"}
 	enqueue(anonymous)
 	step()
 	status(5, "ignored")

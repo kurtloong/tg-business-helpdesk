@@ -110,6 +110,9 @@ func payload(m *Message) (string, map[string]any, error) {
 			p["caption_entities"] = m.CaptionEntities
 		}
 	}
+	if m.StaffIdentity != nil {
+		p["reply_markup"] = m.StaffIdentity
+	}
 	return method, p, nil
 }
 func (t *Telegram) Send(ctx context.Context, m *Message, chatID, threadID int64) (int64, error) {

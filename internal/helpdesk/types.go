@@ -9,16 +9,19 @@ type User struct {
 	ID        int64  `json:"id"`
 	IsBot     bool   `json:"is_bot"`
 	FirstName string `json:"first_name"`
+	LastName  string `json:"last_name"`
 	Username  string `json:"username"`
 }
 type Chat struct {
-	ID   int64  `json:"id"`
-	Type string `json:"type"`
+	ID    int64  `json:"id"`
+	Type  string `json:"type"`
+	Title string `json:"title"`
 }
 type Media struct {
 	FileID string `json:"file_id"`
 }
 type Message struct {
+	StaffIdentity     *InlineKeyboard `json:"-"`
 	IsService         bool            `json:"-"`
 	ID                int64           `json:"message_id"`
 	ThreadID          int64           `json:"message_thread_id"`
